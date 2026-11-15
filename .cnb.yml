@@ -1,0 +1,42 @@
+# CNB 流水线：检查 → 测试 → 构建 → 镜像
+main:
+  push:
+    - stages:
+        - name: vet
+          image: golang:1.23
+          commands:
+            - go vet ./...
+            - test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+        - name: test
+          image: golang:1.23
+          commands:
+            - go test ./... -count=1 -race -coverprofile=coverage.out
+            - go tool cover -func=coverage.out | tail -1
+        - name: build
+          image: golang:1.23
+          commands:
+            - CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=$CNB_COMMIT_SHORT" -o t2c ./cmd/t2c
+            - ls -lh t2c
+            - ./t2c -version
+    - stages:
+        - name: docker
+          image: docker.cnb.cool/golang/docker:dind
+          services:
+            - docker
+          commands:
+            - docker build --build-arg VERSION=$CNB_COMMIT_SHORT -t $CNB_DOCKER_REGISTRY/$CNB_REPO_SLUG_LOWERCASE:$CNB_COMMIT_SHORT .
+            - docker push $CNB_DOCKER_REGISTRY/$CNB_REPO_SLUG_LOWERCASE:$CNB_COMMIT_SHORT
+
+# PR 只做检查，不推镜像
+pr:
+  push:
+    - stages:
+        - name: vet
+          image: golang:1.23
+          commands:
+            - go vet ./...
+            - test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+        - name: test
+          image: golang:1.23
+          commands:
+            - go test ./... -count=1 -race
