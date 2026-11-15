@@ -14,3 +14,6 @@ secret.key
 .vscode/
 *.swp
 .DS_Store
+
+# 发布产物（由 CI 或本地打包生成，不进仓库）
+/dist/
