@@ -5,8 +5,8 @@ data/
 *.db-shm
 secret.key
 
-# 构建产物
-t2c
+# 构建产物（只忽略根目录可执行文件，别误伤 cmd/t2c 源码）
+/t2c
 /dist/
 
 # 编辑器
