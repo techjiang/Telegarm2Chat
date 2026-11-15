@@ -429,15 +429,22 @@
     const shell = state.ui && state.ui.shell;
     if (!shell) return;
     const open = !shell.classList.contains('drawer-open');
+    setDrawer(open);
+  }
+
+  // 抽屉状态要同时落在 shell（遮罩）与 sidebar（滑入）上：
+  // 只加一个类，移动端点菜单就只剩一层灰。
+  function setDrawer(open) {
+    const shell = state.ui && state.ui.shell;
+    if (!shell) return;
     shell.classList.toggle('drawer-open', open);
+    const sidebar = shell.querySelector('.sidebar');
+    if (sidebar) sidebar.classList.toggle('open', open);
     document.body.style.overflow = open ? 'hidden' : '';
   }
 
   function closeDrawer() {
-    const shell = state.ui && state.ui.shell;
-    if (!shell) return;
-    shell.classList.remove('drawer-open');
-    document.body.style.overflow = '';
+    setDrawer(false);
   }
 
   const sidebarClose = closeDrawer;
