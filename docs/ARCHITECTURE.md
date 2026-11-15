@@ -77,6 +77,26 @@ withClientIP → requestLog → recoverer → securityHeaders → rateLimit → 
 - 不可重试错误（4xx）直接放弃，避免毒消息堵住队列
 - 错误信息里的 token 会被脱敏，防止写进日志
 
+## 头像为什么要单独一张表
+
+`user_avatars(user_id, mime, bytes, updated_at)`，主键是 `user_id`。
+
+- **不塞进 `users`**：`users` 每读一次都要全列，头像平均几十 KB，
+  让「查用户」这种热路径背上大 `BLOB` 不划算；单独表按需 JOIN
+- **不做 `ALTER TABLE`**：老库升级只要 `CREATE TABLE IF NOT EXISTS` 就够，
+  迁移不用写版本判断
+- **`updated_at` 既是时间戳也是缓存版本**：前端拼 `/avatar?v=<updated_at>`，
+  上传后立刻换 URL，不用手动清缓存。同一秒内连传两张时必须递增（取 `prev+1`），
+  否则秒级时间戳不变，浏览器会拿旧图——这个坑在浏览器测试里露过一次
+
+类型判定只看**魔数**，不信客户端声明的 `Content-Type`。否则把一段 HTML 声明成
+`image/png` 存进同源，就是一个存储型 XSS 的载体（`<img>` 会按图片处理，
+但直接访问 URL 会按 HTML 渲染）。宽高用 `image.DecodeConfig` 读，
+只读头部不解码整图，顺手挡掉像素炸弹；WebP 标准库没有解码器，
+按 RIFF 头里 VP8/VP8L/VP8X 三种子格式手工解析。
+
+传输用裸字节而非 multipart：前端已经把图缩到 256px，服务端不需要解析边界。
+
 ## 前端
 
 无构建、无框架、无依赖，三个静态文件内嵌进二进制。

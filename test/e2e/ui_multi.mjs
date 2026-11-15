@@ -43,7 +43,7 @@ await evaluate(A, `
   (() => {
     const i = document.querySelectorAll('.modal input');
     i[0].value = '双人测试';
-    [...document.querySelectorAll('.modal .btn')].find(b=>b.textContent==='创建').click();
+    [...document.querySelectorAll('.modal .btn')].find(b=>b.textContent==='确定').click();
   })()
 `);
 await sleep(900);

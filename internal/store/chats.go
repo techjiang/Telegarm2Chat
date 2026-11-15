@@ -22,6 +22,16 @@ type Chat struct {
 	LastReadID   int64  `json:"lastReadId,omitempty"`
 	LastMessage  string `json:"lastMessage,omitempty"`
 	LastActiveAt int64  `json:"lastActiveAt,omitempty"`
+	// Peer 只在私聊里有值：对方的 id / 昵称 / 头像版本，前端据此显示对方头像。
+	Peer *Peer `json:"peer,omitempty"`
+}
+
+// Peer 是私聊对面的那个人。
+type Peer struct {
+	ID            int64  `json:"id"`
+	Username      string `json:"username"`
+	DisplayName   string `json:"displayName"`
+	AvatarVersion int64  `json:"avatarVersion,omitempty"`
 }
 
 const (
@@ -207,9 +217,14 @@ func (s *Store) ListChats(ctx context.Context, userID int64, limit int) ([]Chat,
 		                 ORDER BY msg.id DESC LIMIT 1), '') AS last_body,
 		       COALESCE((SELECT msg.created_at FROM messages msg
 		                 WHERE msg.chat_id=c.id AND msg.deleted_at=0
-		                 ORDER BY msg.id DESC LIMIT 1), 0) AS last_at
+		                 ORDER BY msg.id DESC LIMIT 1), 0) AS last_at,
+		       peer.id, peer.username, peer.display_name,
+		       COALESCE((SELECT av.updated_at FROM user_avatars av WHERE av.user_id = peer.id), 0)
 		FROM chats c
 		JOIN chat_members m ON m.chat_id=c.id AND m.user_id=?1
+		LEFT JOIN chat_members pm
+		       ON pm.chat_id = c.id AND c.kind = 'direct' AND pm.user_id <> ?1
+		LEFT JOIN users peer ON peer.id = pm.user_id
 		WHERE c.archived=0
 		ORDER BY last_at DESC, c.id DESC
 		LIMIT ?2`, userID, limit)
@@ -220,13 +235,22 @@ func (s *Store) ListChats(ctx context.Context, userID int64, limit int) ([]Chat,
 	out := make([]Chat, 0, limit)
 	for rows.Next() {
 		var (
-			c      Chat
-			arch   int
-			lastAt int64
+			c        Chat
+			arch     int
+			lastAt   int64
+			peerID   sql.NullInt64
+			peerName sql.NullString
+			peerDisp sql.NullString
+			peerAv   int64
 		)
 		if err := rows.Scan(&c.ID, &c.Kind, &c.Slug, &c.Title, &c.Topic, &c.CreatedAt, &arch,
-			&c.LastReadID, &c.Unread, &c.LastMessage, &lastAt); err != nil {
+			&c.LastReadID, &c.Unread, &c.LastMessage, &lastAt,
+			&peerID, &peerName, &peerDisp, &peerAv); err != nil {
 			return nil, fmt.Errorf("store: 扫描会话: %w", err)
+		}
+		if peerID.Valid {
+			c.Peer = &Peer{ID: peerID.Int64, Username: peerName.String,
+				DisplayName: peerDisp.String, AvatarVersion: peerAv}
 		}
 		c.Archived = arch == 1
 		c.LastActiveAt = lastAt
@@ -252,7 +276,8 @@ func (s *Store) MarkRead(ctx context.Context, chatID, userID, messageID int64) e
 // Members 返回成员详情（含用户名），用于会话详情展示。
 func (s *Store) Members(ctx context.Context, chatID int64) ([]User, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT u.id, u.username, u.display_name, u.is_admin, u.created_at
+		SELECT u.id, u.username, u.display_name, u.is_admin, u.created_at,
+		       COALESCE((SELECT av.updated_at FROM user_avatars av WHERE av.user_id = u.id), 0)
 		FROM chat_members m JOIN users u ON u.id = m.user_id
 		WHERE m.chat_id=? ORDER BY m.role='owner' DESC, u.username`, chatID)
 	if err != nil {
@@ -265,7 +290,7 @@ func (s *Store) Members(ctx context.Context, chatID int64) ([]User, error) {
 			u   User
 			adm int
 		)
-		if err := rows.Scan(&u.ID, &u.Username, &u.DisplayName, &adm, &u.CreatedAt); err != nil {
+		if err := rows.Scan(&u.ID, &u.Username, &u.DisplayName, &adm, &u.CreatedAt, &u.AvatarVersion); err != nil {
 			return nil, fmt.Errorf("store: 扫描成员: %w", err)
 		}
 		u.IsAdmin = adm == 1

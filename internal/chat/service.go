@@ -111,12 +111,50 @@ func (s *Service) JoinChannel(ctx context.Context, actor store.User, slug string
 	if c.Kind != store.KindChannel {
 		return store.Chat{}, store.ErrInvalidTarget
 	}
-	if err := s.st.AddMember(ctx, c.ID, actor.ID, store.RoleMember); err != nil && !errors.Is(err, store.ErrConflict) {
+	// 已经是成员就静默返回：否则每次点「用频道号加入」都会多一条系统消息。
+	if err := s.st.AddMember(ctx, c.ID, actor.ID, store.RoleMember); err != nil {
+		if errors.Is(err, store.ErrConflict) {
+			return c, nil
+		}
 		return store.Chat{}, err
 	}
 	s.postSystem(ctx, c.ID, actor.DisplayName+" 加入了频道")
 	s.publishChatUpdate(ctx, c.ID)
 	return c, nil
+}
+
+// InviteMember 把目标用户拉进频道。只有频道成员能邀请，且只对频道生效：
+// 私聊的成员集合由两个用户 ID 决定，让人往里塞第三个不合语义。
+func (s *Service) InviteMember(ctx context.Context, actor store.User, chatID int64, username string) (store.User, error) {
+	c, err := s.st.ChatByID(ctx, chatID)
+	if err != nil {
+		return store.User{}, err
+	}
+	if c.Kind != store.KindChannel {
+		return store.User{}, store.ErrInvalidTarget
+	}
+	if ok, _, err := s.st.IsMember(ctx, chatID, actor.ID); err != nil {
+		return store.User{}, err
+	} else if !ok {
+		return store.User{}, store.ErrForbidden
+	}
+	target, err := s.st.UserByUsername(ctx, strings.TrimPrefix(strings.TrimSpace(username), "@"))
+	if err != nil {
+		return store.User{}, err
+	}
+	if target.ID == actor.ID {
+		return store.User{}, errors.New("不用邀请自己，你已经在频道里")
+	}
+	err = s.st.AddMember(ctx, chatID, target.ID, store.RoleMember)
+	if errors.Is(err, store.ErrConflict) {
+		return target, nil // 已经是成员，幂等返回
+	}
+	if err != nil {
+		return store.User{}, err
+	}
+	s.postSystem(ctx, chatID, actor.DisplayName+" 邀请 "+target.DisplayName+" 加入了频道")
+	s.publishChatUpdate(ctx, chatID)
+	return target, nil
 }
 
 // LeaveChannel 退出频道，owner 不可退。
@@ -183,12 +221,13 @@ func (s *Service) Send(ctx context.Context, actor store.User, in SendInput) (Sen
 	}
 
 	m, created, err := s.st.AppendMessage(ctx, store.Message{
-		ChatID:     in.ChatID,
-		SenderID:   actor.ID,
-		SenderName: actor.DisplayName,
-		Source:     store.SourceWeb,
-		Body:       sanitizeBody(in.Body),
-		ClientID:   in.ClientID,
+		ChatID:       in.ChatID,
+		SenderID:     actor.ID,
+		SenderName:   actor.DisplayName,
+		SenderAvatar: actor.AvatarVersion,
+		Source:       store.SourceWeb,
+		Body:         sanitizeBody(in.Body),
+		ClientID:     in.ClientID,
 	})
 	if err != nil {
 		return SendResult{}, err

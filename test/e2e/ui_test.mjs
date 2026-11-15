@@ -58,7 +58,7 @@ await evaluate(c, `
     const inputs = document.querySelectorAll('.modal input');
     inputs[0].value = '前端测试频道';
     inputs[1].value = '浏览器端到端';
-    [...document.querySelectorAll('.modal .btn')].find(b => b.textContent === '创建').click();
+    [...document.querySelectorAll('.modal .btn')].find(b => b.textContent === '确定').click();
   })()
 `);
 await sleep(900);
@@ -124,6 +124,81 @@ check('撤回按钮存在并点击', delBtn === 'clicked', delBtn);
 await sleep(800);
 const afterDel = await evaluate(c, `[...document.querySelectorAll('.msg .text')].map(n=>n.textContent).join('|')`);
 check('消息已从界面移除', !afterDel.includes('恶意内容'), afterDel.slice(0, 100));
+
+console.log('== 头像与昵称 ==');
+await evaluate(c, `document.querySelectorAll('.search-row .icon-btn')[1].click()`);
+await sleep(500);
+check('设置里有「我的资料」入口', await evaluate(c, `!!document.querySelector('.profile-entry')`));
+await evaluate(c, `document.querySelector('.profile-entry').click()`);
+await sleep(450);
+check('资料面板打开且只有一层弹层',
+  (await evaluate(c, `document.querySelectorAll('.modal-bg').length`)) === 1);
+check('默认是字母头像', await evaluate(c, `(() => {
+  const p = document.querySelector('.avatar-preview .avatar');
+  return !!p && !p.querySelector('img');
+})()`));
+
+// 用一支 1×1 的 PNG 走真实文件选择，覆盖 FileReader → canvas → 上传整条链路。
+const TINY_PNG = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+  'base64');
+const { writeFileSync } = await import('node:fs');
+writeFileSync('/tmp/t2c-avatar.png', TINY_PNG);
+const doc = await c.send('DOM.getDocument', {});
+const fi = await c.send('DOM.querySelector', { nodeId: doc.root.nodeId, selector: '.modal input[type=file]' });
+await c.send('DOM.setFileInputFiles', { files: ['/tmp/t2c-avatar.png'], nodeId: fi.nodeId });
+await sleep(2200);
+const previewSrc = await evaluate(c, `document.querySelector('.avatar-preview .avatar img')?.src || ''`);
+check('头像上传后预览出图', previewSrc.length > 0, previewSrc.slice(0, 60));
+await evaluate(c, `document.querySelector('.modal-bg')?.remove()`);
+await sleep(300);
+
+await navigate(c, APP);
+await sleep(1400);
+await evaluate(c, `document.querySelectorAll('.search-row .icon-btn')[1].click()`);
+await sleep(400);
+await evaluate(c, `document.querySelector('.profile-entry').click()`);
+await sleep(600);
+check('刷新后头像从服务端恢复', await evaluate(c, `(() => {
+  const i = document.querySelector('.avatar-preview .avatar img');
+  return !!i && i.src.includes('/avatar');
+})()`));
+
+await evaluate(c, `(() => {
+  const i = document.querySelector('.modal input[type=text]');
+  i.value = '网页用户改名';
+  [...document.querySelectorAll('.modal .btn')].find(b => b.textContent === '保存昵称').click();
+})()`);
+await sleep(1200);
+check('昵称已更新到侧栏', (await evaluate(c, `document.querySelector('.me-row')?.textContent || ''`)).includes('网页用户改名'));
+await evaluate(c, `document.querySelector('.modal-bg')?.remove()`);
+// 刷新后没有选中会话，先点回会话再断言消息里的头像。
+await evaluate(c, `document.querySelector('.chat-item')?.click()`);
+await sleep(1200);
+check('消息旁渲染出头像图片', (await evaluate(c, `document.querySelectorAll('.msg .av img').length`)) >= 1);
+// 只断言「已经加载完的图都不破」：lazy 图此刻可能还没开始下载。
+check('已加载的图片都不破损', await evaluate(c, `
+  [...document.querySelectorAll('img')].every(i => !i.complete || i.naturalWidth > 0)`));
+
+console.log('== 按频道号加入（幂等）==');
+const mySlug = await evaluate(c, `document.querySelector('.slug-chip')?.textContent || ''`);
+check('拿到频道号', mySlug.length > 5, mySlug);
+const beforeJoins = await evaluate(c, `
+  [...document.querySelectorAll('.system-line')].filter(n => n.textContent.includes('加入了频道')).length`);
+await evaluate(c, `document.querySelectorAll('.search-row .icon-btn')[0].click()`);
+await sleep(350);
+await evaluate(c, `(() => {
+  const ins = document.querySelectorAll('.modal input');
+  ins[3].value = ${JSON.stringify(mySlug)};
+  [...document.querySelectorAll('.modal .btn')].find(b => b.textContent === '确定').click();
+})()`);
+await sleep(1100);
+check('重复加入不报错', !(await evaluate(c, `!!document.querySelector('.modal .alert:not(.hidden)')`)));
+await sleep(800);
+const afterJoins = await evaluate(c, `
+  [...document.querySelectorAll('.system-line')].filter(n => n.textContent.includes('加入了频道')).length`);
+check('重复加入不重复写系统消息', afterJoins === beforeJoins, `${beforeJoins} -> ${afterJoins}`);
+await evaluate(c, `document.querySelector('.modal-bg')?.remove()`);
 
 console.log('== 搜索 ==');
 await evaluate(c, `

@@ -185,6 +185,39 @@ func (s *Server) handleMarkRead(w http.ResponseWriter, r *http.Request) {
 	writeData(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
+type inviteReq struct {
+	Username string `json:"username"`
+}
+
+// handleInviteMember 把用户拉进频道（POST /chats/{id}/members）。
+func (s *Server) handleInviteMember(w http.ResponseWriter, r *http.Request) {
+	u, _ := userFrom(r.Context())
+	id, ok := pathID(r, "id")
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid_request", "会话 ID 非法")
+		return
+	}
+	req, ok := decodeJSON[inviteReq](w, r)
+	if !ok {
+		return
+	}
+	if strings.TrimSpace(req.Username) == "" {
+		writeError(w, http.StatusBadRequest, "invalid_request", "缺少用户名")
+		return
+	}
+	target, err := s.svc.InviteMember(r.Context(), u, id, req.Username)
+	if err != nil {
+		if err.Error() == "不用邀请自己，你已经在频道里" {
+			writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+			return
+		}
+		mapErr(w, err)
+		return
+	}
+	s.svc.Store().Audit(r.Context(), u.ID, "chat.invite", target.Username, clientIP(r.Context()))
+	writeData(w, http.StatusOK, map[string]any{"member": target})
+}
+
 func (s *Server) handleMembers(w http.ResponseWriter, r *http.Request) {
 	u, _ := userFrom(r.Context())
 	id, ok := pathID(r, "id")

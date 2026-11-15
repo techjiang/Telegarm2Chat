@@ -18,7 +18,14 @@ type User struct {
 	DisplayName string `json:"displayName"`
 	IsAdmin     bool   `json:"isAdmin"`
 	CreatedAt   int64  `json:"createdAt"`
+	// AvatarVersion 是头像更新时间戳，非 0 表示有自定义头像。
+	// 前端用它拼 /api/v1/users/{id}/avatar?v=<ver> 来破坏缓存。
+	AvatarVersion int64 `json:"avatarVersion,omitempty"`
 }
+
+// userCols 统一用户查询字段，头像版本走子查询，避免每条 SQL 各写一遍 LEFT JOIN。
+const userCols = `id, username, display_name, is_admin, created_at,
+	COALESCE((SELECT updated_at FROM user_avatars av WHERE av.user_id = users.id), 0)`
 
 // ValidateUsername 只允许小写字母数字下划线与短横线，长度 3..32。
 func ValidateUsername(name string) error {
@@ -86,9 +93,9 @@ func (s *Store) Authenticate(ctx context.Context, username, password string) (Us
 		lastSeen int64
 	)
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, username, display_name, password_hash, is_admin, created_at
+		`SELECT `+userCols+`, password_hash
 		 FROM users WHERE username = ?`, username).
-		Scan(&u.ID, &u.Username, &u.DisplayName, &hash, &isAdmin, &u.CreatedAt)
+		Scan(&u.ID, &u.Username, &u.DisplayName, &isAdmin, &u.CreatedAt, &u.AvatarVersion, &hash)
 	if errors.Is(err, sql.ErrNoRows) {
 		auth.DummyVerify(password)
 		return User{}, ErrUnauthorized
@@ -112,8 +119,8 @@ func (s *Store) UserByID(ctx context.Context, id int64) (User, error) {
 		isAdmin int
 	)
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, username, display_name, is_admin, created_at FROM users WHERE id = ?`, id).
-		Scan(&u.ID, &u.Username, &u.DisplayName, &isAdmin, &u.CreatedAt)
+		`SELECT `+userCols+` FROM users WHERE id = ?`, id).
+		Scan(&u.ID, &u.Username, &u.DisplayName, &isAdmin, &u.CreatedAt, &u.AvatarVersion)
 	if errors.Is(err, sql.ErrNoRows) {
 		return User{}, ErrNotFound
 	}
@@ -131,9 +138,9 @@ func (s *Store) UserByUsername(ctx context.Context, username string) (User, erro
 		isAdmin int
 	)
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, username, display_name, is_admin, created_at FROM users WHERE username = ?`,
+		`SELECT `+userCols+` FROM users WHERE username = ?`,
 		NormalizeUsername(username)).
-		Scan(&u.ID, &u.Username, &u.DisplayName, &isAdmin, &u.CreatedAt)
+		Scan(&u.ID, &u.Username, &u.DisplayName, &isAdmin, &u.CreatedAt, &u.AvatarVersion)
 	if errors.Is(err, sql.ErrNoRows) {
 		return User{}, ErrNotFound
 	}
@@ -151,7 +158,7 @@ func (s *Store) SearchUsers(ctx context.Context, q string, limit int) ([]User, e
 		limit = 10
 	}
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, username, display_name, is_admin, created_at FROM users
+		`SELECT `+userCols+` FROM users
 		 WHERE username LIKE ?1 OR display_name LIKE ?1 ORDER BY username LIMIT ?2`,
 		q+"%", limit)
 	if err != nil {
@@ -164,7 +171,7 @@ func (s *Store) SearchUsers(ctx context.Context, q string, limit int) ([]User, e
 			u       User
 			isAdmin int
 		)
-		if err := rows.Scan(&u.ID, &u.Username, &u.DisplayName, &isAdmin, &u.CreatedAt); err != nil {
+		if err := rows.Scan(&u.ID, &u.Username, &u.DisplayName, &isAdmin, &u.CreatedAt, &u.AvatarVersion); err != nil {
 			return nil, fmt.Errorf("store: 扫描用户: %w", err)
 		}
 		u.IsAdmin = isAdmin == 1

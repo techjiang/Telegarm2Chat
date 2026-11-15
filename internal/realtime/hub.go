@@ -24,6 +24,7 @@ const (
 	EventMessageDeleted = "message.deleted"
 	EventRead           = "read"
 	EventChat           = "chat"
+	EventProfile        = "profile" // 昵称或头像变更
 	EventPresence       = "presence"
 	EventError          = "error"
 	EventReady          = "ready"

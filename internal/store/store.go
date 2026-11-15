@@ -143,6 +143,15 @@ CREATE TABLE IF NOT EXISTS tg_state (
   value TEXT NOT NULL
 );
 
+-- 头像单独存表：老库无需 ALTER，CREATE IF NOT EXISTS 即可升级。
+-- 图片由前端缩放到 256px 内再上传，这里只做魔数与尺寸校验。
+CREATE TABLE IF NOT EXISTS user_avatars (
+  user_id    INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  mime       TEXT    NOT NULL,
+  bytes      BLOB    NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS audit_log (
   id        INTEGER PRIMARY KEY AUTOINCREMENT,
   actor_id  INTEGER NOT NULL DEFAULT 0,

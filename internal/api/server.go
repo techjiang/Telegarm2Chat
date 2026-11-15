@@ -82,6 +82,9 @@ func (s *Server) routes() {
 	// 需登录
 	authed := func(h http.HandlerFunc) http.Handler { return s.requireAuth(h) }
 	m.Handle("GET /api/v1/me", authed(s.handleMe))
+	m.Handle("PATCH /api/v1/me", authed(s.handleUpdateMe))
+	m.Handle("POST /api/v1/me/avatar", authed(s.handleUploadAvatar))
+	m.Handle("DELETE /api/v1/me/avatar", authed(s.handleDeleteAvatar))
 	m.Handle("POST /api/v1/auth/logout", authed(s.handleLogout))
 
 	m.Handle("GET /api/v1/chats", authed(s.handleListChats))
@@ -92,6 +95,7 @@ func (s *Server) routes() {
 	m.Handle("DELETE /api/v1/chats/{id}/messages/{mid}", authed(s.handleDeleteMessage))
 	m.Handle("POST /api/v1/chats/{id}/read", authed(s.handleMarkRead))
 	m.Handle("GET /api/v1/chats/{id}/members", authed(s.handleMembers))
+	m.Handle("POST /api/v1/chats/{id}/members", authed(s.handleInviteMember))
 	m.Handle("POST /api/v1/chats/{id}/leave", authed(s.handleLeaveChat))
 	m.Handle("POST /api/v1/chats/{id}/telegram", authed(s.handleLinkTelegram))
 	m.Handle("DELETE /api/v1/chats/{id}/telegram", authed(s.handleUnlinkTelegram))
@@ -100,6 +104,10 @@ func (s *Server) routes() {
 	m.Handle("GET /api/v1/users/search", authed(s.handleUserSearch))
 	m.Handle("GET /api/v1/search", authed(s.handleSearch))
 	m.Handle("GET /api/v1/stats", authed(s.handleStats))
+
+	// 头像：公开读，方便 <img> 直接引用（内容已是受控的图片字节）
+	m.HandleFunc("GET /api/v1/users/{id}/avatar", s.handleAvatar)
+	m.HandleFunc("HEAD /api/v1/users/{id}/avatar", s.handleAvatar)
 
 	// WebSocket
 	m.Handle("GET /api/v1/ws", authed(http.HandlerFunc(s.handleWS)))

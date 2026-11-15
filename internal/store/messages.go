@@ -27,7 +27,14 @@ type Message struct {
 	Body       string `json:"body"`
 	ClientID   string `json:"clientId,omitempty"`
 	CreatedAt  int64  `json:"createdAt"`
+	// SenderAvatar 是发送者头像版本，0 表示没设过头像（前端回落到字母头像）。
+	SenderAvatar int64 `json:"senderAvatar,omitempty"`
 }
+
+// senderAvatarExpr 作为 SELECT 里的附加列，拿到消息发送者的头像版本。
+// 用相关子查询而不是 LEFT JOIN：messages 是热表，多一个 join 会更贵。
+const senderAvatarExpr = `COALESCE((SELECT av.updated_at FROM user_avatars av
+	WHERE av.user_id = messages.sender_id), 0)`
 
 // AppendMessage 写入消息；同一 chat 内 client_id 重复时返回已存在的那条（幂等重试）。
 func (s *Store) AppendMessage(ctx context.Context, m Message) (Message, bool, error) {
@@ -72,10 +79,12 @@ func (s *Store) AppendMessage(ctx context.Context, m Message) (Message, bool, er
 
 func (s *Store) messageByClientID(ctx context.Context, chatID int64, clientID string) (Message, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, chat_id, COALESCE(sender_id,0), sender_name, source, body, client_id, created_at
+		`SELECT id, chat_id, COALESCE(sender_id,0), sender_name, source, body, client_id, created_at,
+		        `+senderAvatarExpr+`
 		 FROM messages WHERE chat_id=? AND client_id=?`, chatID, clientID)
 	var m Message
-	err := row.Scan(&m.ID, &m.ChatID, &m.SenderID, &m.SenderName, &m.Source, &m.Body, &m.ClientID, &m.CreatedAt)
+	err := row.Scan(&m.ID, &m.ChatID, &m.SenderID, &m.SenderName, &m.Source, &m.Body, &m.ClientID,
+		&m.CreatedAt, &m.SenderAvatar)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Message{}, ErrNotFound
 	}
@@ -88,10 +97,12 @@ func (s *Store) messageByClientID(ctx context.Context, chatID int64, clientID st
 // MessageByID 按 ID 取未删除消息。
 func (s *Store) MessageByID(ctx context.Context, id int64) (Message, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, chat_id, COALESCE(sender_id,0), sender_name, source, body, client_id, created_at
+		`SELECT id, chat_id, COALESCE(sender_id,0), sender_name, source, body, client_id, created_at,
+		        `+senderAvatarExpr+`
 		 FROM messages WHERE id=? AND deleted_at=0`, id)
 	var m Message
-	err := row.Scan(&m.ID, &m.ChatID, &m.SenderID, &m.SenderName, &m.Source, &m.Body, &m.ClientID, &m.CreatedAt)
+	err := row.Scan(&m.ID, &m.ChatID, &m.SenderID, &m.SenderName, &m.Source, &m.Body, &m.ClientID,
+		&m.CreatedAt, &m.SenderAvatar)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Message{}, ErrNotFound
 	}
@@ -121,7 +132,8 @@ func (s *Store) ListMessages(ctx context.Context, p ListParams) ([]Message, erro
 		rows *sql.Rows
 		err  error
 	)
-	base := `SELECT id, chat_id, COALESCE(sender_id,0), sender_name, source, body, client_id, created_at
+	base := `SELECT id, chat_id, COALESCE(sender_id,0), sender_name, source, body, client_id, created_at,
+	                ` + senderAvatarExpr + `
 	        FROM messages WHERE chat_id=? AND deleted_at=0`
 	switch {
 	case p.AfterID > 0:
@@ -142,7 +154,7 @@ func (s *Store) ListMessages(ctx context.Context, p ListParams) ([]Message, erro
 	for rows.Next() {
 		var m Message
 		if err := rows.Scan(&m.ID, &m.ChatID, &m.SenderID, &m.SenderName, &m.Source, &m.Body,
-			&m.ClientID, &m.CreatedAt); err != nil {
+			&m.ClientID, &m.CreatedAt, &m.SenderAvatar); err != nil {
 			return nil, fmt.Errorf("store: 扫描消息: %w", err)
 		}
 		out = append(out, m)

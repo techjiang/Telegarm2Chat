@@ -115,6 +115,77 @@
   }
 
   const initial = (name) => (name || '?').trim().charAt(0).toUpperCase() || '?';
+
+  // ---------------------------------------------------------------- 头像
+  /**
+   * 生成头像节点：有自定义头像就放 <img>，否则回落到首字母色块。
+   * 用 avatarVersion 拼 ?v= 让缓存随更新失效，不需手动清缓存。
+   * 图片加载失败（比如刚被删）时静默回落，不留破图。
+   */
+  function avatarEl(user, extraClass) {
+    const box = el('div', { class: 'avatar' + (extraClass ? ' ' + extraClass : '') });
+    const name = user.name || '?';
+    const ver = user.avatarVersion || 0;
+    if (ver && user.id) {
+      const img = el('img', {
+        src: `/api/v1/users/${user.id}/avatar?v=${ver}`,
+        alt: '', loading: 'lazy', decoding: 'async',
+      });
+      img.addEventListener('error', () => { img.remove(); box.textContent = initial(name); });
+      box.append(img);
+    } else {
+      box.textContent = initial(name);
+    }
+    return box;
+  }
+
+  /** 从消息对象取发送者头像信息。 */
+  const senderAvatar = (m, isMe) => avatarEl({
+    id: m.senderId,
+    name: isMe ? (state.me.displayName || state.me.username) : m.senderName,
+    avatarVersion: isMe ? state.me.avatarVersion : m.senderAvatar,
+  }, 'av');
+
+  /**
+   * 把用户选的图片缩到 256px 内再上传。
+   * 理由：手机直出照片动辄 5MB，原图上传既慢又顶到服务端 256KB 上限；
+   * 头像最大显示 72px，256px 已经足够 3 倍屏。
+   */
+  const AVATAR_SIDE = 256;
+  function shrinkImage(file) {
+    return new Promise((resolve, reject) => {
+      if (!/^image\//.test(file.type)) { reject(new Error('请选择图片文件')); return; }
+      if (file.size > 8 << 20) { reject(new Error('图片不能超过 8 MB')); return; }
+      // 用 FileReader 读 data: URL，而不是 createObjectURL。
+      // CSP 的 img-src 是 'self' data:，blob: 会被拦掉——图还没画出来就报错。
+      const reader = new FileReader();
+      reader.onerror = () => reject(new Error('这张图片读不出来，换一张试试'));
+      reader.onload = () => {
+        const img = new Image();
+        img.onerror = () => reject(new Error('这张图片读不出来，换一张试试'));
+        img.onload = () => {
+          const scale = Math.min(1, AVATAR_SIDE / Math.max(img.width, img.height));
+          const w = Math.max(1, Math.round(img.width * scale));
+          const h = Math.max(1, Math.round(img.height * scale));
+          const cv = document.createElement('canvas');
+          cv.width = w; cv.height = h;
+          const ctx = cv.getContext('2d');
+          ctx.imageSmoothingQuality = 'high';
+          ctx.drawImage(img, 0, 0, w, h);
+          // 优先 webp（同画质体积小一半）；不支持的浏览器会静默回落成 png。
+          let dataUrl = cv.toDataURL('image/webp', 0.86);
+          if (dataUrl.startsWith('data:image/png')) dataUrl = cv.toDataURL('image/png');
+          const bin = atob(dataUrl.slice(dataUrl.indexOf(',') + 1));
+          const bytes = new Uint8Array(bin.length);
+          for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+          resolve({ bytes, dataUrl });
+        };
+        img.src = String(reader.result);
+      };
+      reader.readAsDataURL(file);
+    });
+  }
+
   const AUTHOR_RE = /@([a-z0-9_-]{3,32})/g;
 
   /** 把纯文本渲染成含 @提及高亮的片段，全程 textContent 语义。 */
@@ -124,7 +195,7 @@
       if (m.index > last) parent.append(text.slice(last, m.index));
       const name = m[1];
       const isMe = myUsername && name === myUsername;
-      parent.append(el('span', { class: 'who-name' + (isMe ? '' : ''), text: '@' + name }));
+      parent.append(el('span', { class: 'who-name' + (isMe ? ' me' : ''), text: '@' + name }));
       last = m.index + m[0].length;
     }
     if (last < text.length) parent.append(text.slice(last));
@@ -262,7 +333,13 @@
     );
 
     const titleEl = el('h2', { text: '选择一个会话' });
-    const subEl = el('div', { class: 'sub', text: '' });
+    // 窄屏放不下频道 chip，退化成标题旁一个小按钮，仍能点一下复制。
+    const subSlugEl = el('button', {
+      class: 'slug-inline', type: 'button', 'aria-label': '复制频道号', title: '复制频道号',
+    }, icon('M11 3H5a2 2 0 0 0-2 2v6h2V5h6V3zm4 4H9a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2zm0 12H9V9h6v10z'));
+    const subTextEl = el('div', { class: 'sub', text: '' });
+    const titleRow = el('div', { class: 't-row' }, titleEl, subSlugEl);
+    const subEl = subTextEl;
     const slugChip = el('span', { class: 'slug-chip hidden' });
     const actionsEl = el('div', { class: 'actions' });
     const menuBtn = el('button', {
@@ -271,7 +348,7 @@
     }, icon(ICONS.menu));
     const panelHead = el('header', { class: 'panel-head' },
       menuBtn,
-      el('div', { class: 'titles' }, titleEl, subEl),
+      el('div', { class: 'titles' }, titleRow, subEl),
       slugChip,
       actionsEl,
     );
@@ -303,7 +380,7 @@
     root.append(shell);
 
     state.ui = {
-      shell, connDot, chatListEl, messagesEl, titleEl, subEl,
+      shell, connDot, chatListEl, messagesEl, titleEl, subEl, subTextEl, subSlugEl, whoName,
       slugChip, actionsEl, composer, input, sendBtn, panel,
     };
     // 点击会话后收起抽屉
@@ -357,7 +434,9 @@
         onclick: () => openChat(c.id),
         onkeydown: (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); openChat(c.id); } },
       },
-        el('div', { class: 'avatar', text: initial(c.title) }),
+        c.kind === 'direct' && c.peer
+          ? avatarEl({ id: c.peer.id, name: c.peer.displayName || c.peer.username, avatarVersion: c.peer.avatarVersion })
+          : avatarEl({ name: c.title }),
         el('div', { class: 'chat-meta' },
           el('div', { class: 'chat-title', text: c.title }),
           el('div', { class: 'chat-preview', text: c.lastMessage || (c.kind === 'direct' ? '私聊' : '暂无消息') }),
@@ -385,16 +464,20 @@
     renderChats();
 
     const ui = state.ui;
-    ui.titleEl.textContent = chat.title;
-    ui.subEl.textContent = chat.kind === 'direct' ? '私聊' : (chat.topic || '频道');
-    ui.slugChip.textContent = chat.slug;
-    ui.slugChip.classList.remove('hidden');
-    ui.slugChip.onclick = async () => {
+    const copySlug = async () => {
       try {
         await navigator.clipboard.writeText(chat.slug);
         toast('频道号已复制');
       } catch { toast(chat.slug); }
     };
+    ui.titleEl.textContent = chat.title;
+    ui.subTextEl.textContent = chat.kind === 'direct' ? '私聊' : (chat.topic || '频道');
+    // 私聊没有频道号，藏掉那个复制按钮。
+    ui.subSlugEl.classList.toggle('hidden', chat.kind === 'direct');
+    ui.subSlugEl.onclick = copySlug;
+    ui.slugChip.textContent = chat.slug;
+    ui.slugChip.classList.remove('hidden');
+    ui.slugChip.onclick = copySlug;
     ui.actionsEl.replaceChildren(
       el('button', {
         class: 'icon-btn', title: '成员', 'aria-label': '成员', onclick: () => openMembers(chat),
@@ -498,7 +581,7 @@
     }
     for (const p of pending) {
       container.append(el('div', { class: 'msg pending', dataset: { clientId: p.clientId } },
-        el('div', { class: 'avatar av', text: initial(state.me.displayName || state.me.username) }),
+        avatarEl({ id: state.me.id, name: state.me.displayName || state.me.username, avatarVersion: state.me.avatarVersion }, 'av'),
         el('div', { class: 'msg-body' },
           el('div', { class: 'msg-head' },
             el('span', { class: 'name', text: '我' }),
@@ -537,7 +620,7 @@
       class: 'msg' + (compact ? ' cont' : '') + (optimistic ? ' pending' : ''),
       dataset: { id: String(m.id) },
     },
-      el('div', { class: 'avatar av', text: initial(isMe ? (state.me.displayName || state.me.username) : m.senderName) }),
+      senderAvatar(m, isMe),
       el('div', { class: 'msg-body' }, head, textNode, actions),
     );
   }
@@ -734,6 +817,18 @@
       case 'chat':
         upsertChat(ev.data);
         break;
+      case 'profile': {
+        // 自己改资料时服务端也会推回来，多端保持一致。
+        if (state.me && ev.data && ev.data.id === state.me.id) {
+          state.me = { ...state.me, ...ev.data };
+          if (state.ui && state.ui.whoName) {
+            state.ui.whoName.textContent = state.me.displayName || state.me.username;
+          }
+          if (state.activeChat) renderMessages(state.activeChat.id);
+        }
+        loadChats();
+        break;
+      }
       case 'read':
         break;
       default:
@@ -762,24 +857,37 @@
     const channelTitle = el('input', { placeholder: '例如：产品讨论', maxlength: '80', 'aria-label': '频道名' });
     const topic = el('input', { placeholder: '一句话说明（可选）', maxlength: '240', 'aria-label': '频道说明' });
     const dmUser = el('input', { placeholder: '对方的用户名，如 alice', 'aria-label': '私聊对象' });
+    const joinSlug = el('input', { placeholder: '例如 c-ab3d9kx2mn', 'aria-label': '频道号' });
     const alertBox = el('div', { class: 'alert hidden' });
+
+    const fail = (msg) => { alertBox.textContent = msg; alertBox.classList.remove('hidden'); };
 
     const close = modal('新建会话', '频道可以分享给多人，私聊只有你们两人。',
       el('div', {},
         alertBox,
-        el('div', { class: 'field' }, el('label', { text: '频道名' }), channelTitle),
-        el('div', { class: 'field' }, el('label', { text: '说明' }), topic),
-        el('div', { class: 'field' }, el('label', { text: '或发起私聊' }), dmUser),
+        el('div', { class: 'field' }, el('label', { text: '创建频道' }), channelTitle),
+        el('div', { class: 'field' }, el('label', { text: '频道说明（可选）' }), topic),
+        el('div', { class: 'field' }, el('label', { text: '发起私聊' }), dmUser),
+        el('div', { class: 'field' }, el('label', { text: '用频道号加入' }), joinSlug),
       ),
       el('div', { class: 'row' },
         el('button', { class: 'btn ghost', text: '取消', onclick: () => close() }),
         el('button', {
-          class: 'btn', text: '创建',
+          class: 'btn', text: '确定',
           onclick: async (ev) => {
             const btn = ev.currentTarget;
             alertBox.classList.add('hidden');
             btn.disabled = true;
             try {
+              // 三个入口互斥，按填写顺序判定，避免用户两头都填后行为不可预期。
+              if (joinSlug.value.trim()) {
+                const c = await api('POST', '/chats/join', { slug: joinSlug.value.trim() });
+                close();
+                await loadChats();
+                await openChat(c.id);
+                toast(`已加入「${c.title}」`);
+                return;
+              }
               if (dmUser.value.trim()) {
                 const c = await api('POST', '/direct', { username: dmUser.value.trim() });
                 close();
@@ -787,15 +895,14 @@
                 openChat(c.id);
                 return;
               }
-              if (!channelTitle.value.trim()) throw new Error('请填写频道名');
+              if (!channelTitle.value.trim()) throw new Error('请填写频道名，或改填私聊对象 / 频道号');
               const c = await api('POST', '/chats', { title: channelTitle.value.trim(), topic: topic.value.trim() });
               close();
               upsertChat({ ...c, unread: 0, lastMessage: '' });
               openChat(c.id);
               toast(`频道已创建，频道号 ${c.slug}`);
             } catch (err) {
-              alertBox.textContent = err.message;
-              alertBox.classList.remove('hidden');
+              fail(err.message);
               btn.disabled = false;
             }
           },
@@ -860,57 +967,95 @@
 
   async function openMembers(chat) {
     const list = el('div', { class: 'result-list' }, el('div', { class: 'empty-hint', text: '加载中…' }));
-    const inviteRow = el('div', { class: 'field' },
-      el('label', { text: '邀请他人加入' }),
-      el('input', { placeholder: '用户名', 'aria-label': '要邀请的用户名', id: 'invite-user' }),
-    );
-    const tgRow = el('div', { class: 'field' },
-      el('label', { text: '绑定 Telegram 群 ID（-100… 格式）' }),
-      el('input', { placeholder: '例如 -1001234567890', 'aria-label': 'Telegram 群 ID', id: 'tg-id' }),
-    );
-    const close = modal(`关于「${chat.title}」`,
-      chat.kind === 'direct' ? '私聊成员' : `频道号 ${chat.slug}`,
-      el('div', {}, list, chat.kind === 'channel' ? inviteRow : null, chat.kind === 'channel' ? tgRow : null),
-      el('div', { class: 'row' },
-        el('button', {
-          class: 'btn', text: '保存',
+    const inviteInput = el('input', {
+      placeholder: '要邀请的用户名', 'aria-label': '要邀请的用户名', id: 'invite-user',
+    });
+    const tgInput = el('input', {
+      placeholder: '例如 -1001234567890', 'aria-label': 'Telegram 群 ID', id: 'tg-id',
+    });
+    const alertBox = el('div', { class: 'alert hidden' });
+
+    // 邀请是频道专属动作：私聊只有两个人，没有「拉第三个进来」这回事。
+    const inviteBtn = chat.kind === 'channel'
+      ? el('button', {
+          class: 'btn', text: '邀请',
           onclick: async (ev) => {
             const btn = ev.currentTarget;
+            const name = inviteInput.value.trim();
+            alertBox.classList.add('hidden');
+            if (!name) { alertBox.textContent = '请填写用户名'; alertBox.classList.remove('hidden'); return; }
             btn.disabled = true;
             try {
-              const inviteUser = $('#invite-user');
-              if (inviteUser && inviteUser.value.trim()) {
-                const u = inviteUser.value.trim();
-                await api('POST', '/direct', { username: u });
-                toast('已为你们创建私聊');
-              }
-              const tg = $('#tg-id');
-              if (tg && tg.value.trim()) {
-                await api('POST', `/chats/${chat.id}/telegram`, { tgChatId: tg.value.trim() });
-                toast('Telegram 绑定成功');
-              }
-              close();
+              const data = await api('POST', `/chats/${chat.id}/members`, { username: name });
+              inviteInput.value = '';
+              toast(`已邀请 ${data.member.displayName || data.member.username} 加入`);
               await loadChats();
+              await renderMembers();
             } catch (err) {
-              toast(err.message, 'err');
-              btn.disabled = false;
+              alertBox.textContent = err.message;
+              alertBox.classList.remove('hidden');
             }
+            btn.disabled = false;
           },
-        }),
+        })
+      : null;
+
+    const tgBtn = chat.kind === 'channel'
+      ? el('button', {
+          class: 'btn ghost', text: '保存',
+          onclick: async (ev) => {
+            const btn = ev.currentTarget;
+            alertBox.classList.add('hidden');
+            if (!tgInput.value.trim()) { alertBox.textContent = '请填写群 ID'; alertBox.classList.remove('hidden'); return; }
+            btn.disabled = true;
+            try {
+              await api('POST', `/chats/${chat.id}/telegram`, { tgChatId: tgInput.value.trim() });
+              toast('Telegram 绑定成功');
+            } catch (err) {
+              alertBox.textContent = err.message;
+              alertBox.classList.remove('hidden');
+            }
+            btn.disabled = false;
+          },
+        })
+      : null;
+
+    async function renderMembers() {
+      try {
+        const data = await api('GET', `/chats/${chat.id}/members`);
+        list.replaceChildren();
+        for (const u of data.members || []) {
+          list.append(el('div', { class: 'result-item member-row' },
+            avatarEl({ id: u.id, name: u.displayName || u.username, avatarVersion: u.avatarVersion }),
+            el('div', {},
+              el('div', { class: 't', text: (u.displayName || u.username) + (u.id === state.me.id ? '（我）' : '') }),
+              el('div', { class: 's', text: '@' + u.username + (u.isAdmin ? ' · 管理员' : '') }),
+            ),
+          ));
+        }
+        if (!data.members || !data.members.length) {
+          list.append(el('div', { class: 'empty-hint', text: '还没有成员' }));
+        }
+      } catch (err) {
+        list.replaceChildren(el('div', { class: 'empty-hint', text: err.message }));
+      }
+    }
+
+    const close = modal(`关于「${chat.title}」`,
+      chat.kind === 'direct' ? '私聊成员' : `频道号 ${chat.slug} · 可分享给他人`,
+      el('div', {},
+        alertBox,
+        list,
+        chat.kind === 'channel' ? el('div', { class: 'field' }, el('label', { text: '邀请他人加入' }), inviteInput) : null,
+        chat.kind === 'channel' ? el('div', { class: 'field' }, el('label', { text: '绑定 Telegram 群 ID（-100… 格式）' }), tgInput) : null,
+      ),
+      el('div', { class: 'row' },
+        el('button', { class: 'btn ghost', text: '关闭', onclick: () => close() }),
+        tgBtn,
+        inviteBtn,
       ));
 
-    try {
-      const data = await api('GET', `/chats/${chat.id}/members`);
-      list.replaceChildren();
-      for (const u of data.members || []) {
-        list.append(el('div', { class: 'result-item' },
-          el('div', { class: 't', text: (u.displayName || u.username) + (u.id === state.me.id ? '（我）' : '') }),
-          el('div', { class: 's', text: '@' + u.username + (u.isAdmin ? ' · 管理员' : '') }),
-        ));
-      }
-    } catch (err) {
-      list.replaceChildren(el('div', { class: 'empty-hint', text: err.message }));
-    }
+    await renderMembers();
   }
 
   async function leaveChat(chat) {
@@ -933,7 +1078,8 @@
                 state.activeChat = null;
                 state.ui.messagesEl.replaceChildren();
                 state.ui.titleEl.textContent = '选择一个会话';
-                state.ui.subEl.textContent = '';
+                state.ui.subTextEl.textContent = '';
+                state.ui.subSlugEl.classList.add('hidden');
                 state.ui.slugChip.classList.add('hidden');
                 state.ui.composer.classList.add('hidden');
               }
@@ -945,25 +1091,136 @@
       ));
   }
 
-  async function openSettings() {
-    let stats = null;
-    try { stats = await api('GET', '/stats'); } catch { /* 忽略 */ }
-    const rows = stats ? [
-      ['在线用户', String(stats.online)],
-      ['消息总数', String(stats.store.messages)],
-      ['会话数', String(stats.store.chats)],
-      ['待发 Telegram', String(stats.store.pendingTelegram)],
-      ['运行时长', `${Math.floor(stats.uptimeSeconds / 60)} 分钟`],
-      ['版本', state.meta ? state.meta.version : '-'],
-    ] : [];
-    const list = el('div', { class: 'result-list' });
-    for (const [k, v] of rows) {
-      list.append(el('div', { class: 'result-item' },
-        el('div', { class: 't', text: k }), el('div', { class: 's', text: v })));
+  // ---------------------------------------------------------------- 我的资料
+  /**
+   * 消息里存的 senderName 是发送当时的快照。改了昵称后历史消息不会变，
+   * 这是刻意的：聊天记录应该保留当时的样子。但当前会话里自己的头像/昵称
+   * 需要立刻刷新，所以改完就地重绘。
+   */
+  async function refreshProfiles() {
+    try { state.me = await api('GET', '/me'); } catch { /* 忽略 */ }
+    if (state.ui) {
+      const who = state.ui.whoName;
+      if (who) who.textContent = state.me.displayName || state.me.username;
+      await loadChats();
+      if (state.activeChat) renderMessages(state.activeChat.id);
     }
+  }
+
+  function openProfile() {
+    const alertBox = el('div', { class: 'alert hidden' });
+    const preview = el('div', { class: 'avatar-preview' },
+      avatarEl({ id: state.me.id, name: state.me.displayName || state.me.username, avatarVersion: state.me.avatarVersion }, 'lg'));
+
+    const fileInput = el('input', {
+      type: 'file', accept: 'image/png,image/jpeg,image/gif,image/webp',
+      class: 'hidden', 'aria-label': '选择头像图片',
+    });
+    const pickBtn = el('button', {
+      class: 'btn ghost', type: 'button', text: '选择图片',
+      onclick: () => fileInput.click(),
+    });
+    const removeBtn = el('button', {
+      class: 'btn ghost', type: 'button', text: '恢复默认',
+      onclick: async () => {
+        // 不用 ev.currentTarget：await 之后事件对象已失效，直接引用节点更稳。
+        removeBtn.disabled = true;
+        try {
+          const data = await api('DELETE', '/me/avatar');
+          state.me = data.user;
+          preview.replaceChildren(avatarEl({ id: state.me.id, name: state.me.displayName || state.me.username, avatarVersion: 0 }, 'lg'));
+          toast('已恢复默认头像');
+          await refreshProfiles();
+        } catch (err) { toast(err.message, 'err'); }
+        removeBtn.disabled = false;
+      },
+    });
+
+    fileInput.addEventListener('change', async () => {
+      const file = fileInput.files && fileInput.files[0];
+      fileInput.value = '';
+      if (!file) return;
+      alertBox.classList.add('hidden');
+      pickBtn.disabled = true;
+      pickBtn.textContent = '处理中…';
+      try {
+        const { bytes, dataUrl } = await shrinkImage(file);
+        const res = await fetch('/api/v1/me/avatar', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/octet-stream',
+            Authorization: `Bearer ${state.token}`,
+          },
+          body: bytes,
+        });
+        let payload = null;
+        try { payload = await res.json(); } catch { /* 非 JSON */ }
+        if (!res.ok || (payload && payload.ok === false)) {
+          throw new Error((payload && payload.error && payload.error.message) || `上传失败（${res.status}）`);
+        }
+        state.me = payload.data.user;
+        preview.replaceChildren(el('div', { class: 'avatar lg' }, el('img', { src: dataUrl, alt: '' })));
+        toast('头像已更新');
+        await refreshProfiles();
+      } catch (err) {
+        alertBox.textContent = err.message;
+        alertBox.classList.remove('hidden');
+      } finally {
+        pickBtn.disabled = false;
+        pickBtn.textContent = '选择图片';
+      }
+    });
+
+    const nameInput = el('input', {
+      type: 'text', maxlength: '32', value: state.me.displayName || state.me.username,
+      'aria-label': '昵称',
+    });
+
+    const close = modal('我的资料', `@${state.me.username}${state.me.isAdmin ? ' · 管理员' : ''}（用户名不可修改）`,
+      el('div', {},
+        alertBox,
+        el('div', { class: 'profile-row' }, preview,
+          el('div', { class: 'profile-actions' }, pickBtn, removeBtn, fileInput)),
+        el('div', { class: 'field' }, el('label', { text: '昵称' }), nameInput),
+      ),
+      el('div', { class: 'row' },
+        el('button', { class: 'btn ghost', text: '取消', onclick: () => close() }),
+        el('button', {
+          class: 'btn', text: '保存昵称',
+          onclick: async (ev) => {
+            const btn = ev.currentTarget;
+            alertBox.classList.add('hidden');
+            btn.disabled = true;
+            try {
+              state.me = await api('PATCH', '/me', { displayName: nameInput.value.trim() });
+              toast('昵称已更新');
+              close();
+              await refreshProfiles();
+            } catch (err) {
+              alertBox.textContent = err.message;
+              alertBox.classList.remove('hidden');
+              btn.disabled = false;
+            }
+          },
+        }),
+      ));
+  }
+
+  function openSettings() {
+    const statsBox = el('div', { class: 'result-list' },
+      el('div', { class: 'empty-hint', text: '读取中…' }));
+    // 打开资料面板时先收起设置面板：两层弹层叠着，ESC 与点击遮罩的行为都会错乱。
+    const meRow = el('button', {
+      class: 'result-item profile-entry', type: 'button',
+      onclick: () => { close(); openProfile(); },
+    },
+      el('div', { class: 't' }, '我的资料'),
+      el('div', { class: 's' }, '改昵称、设置头像'),
+    );
+
     const close = modal(`设置 · ${state.me.displayName || state.me.username}`,
       `@${state.me.username}${state.me.isAdmin ? ' · 管理员' : ''}`,
-      el('div', {}, list),
+      el('div', {}, meRow, statsBox),
       el('div', { class: 'row' },
         el('button', { class: 'btn ghost', text: '关闭', onclick: () => close() }),
         el('button', {
@@ -971,6 +1228,28 @@
           onclick: () => { close(); logout(); },
         }),
       ));
+
+    (async () => {
+      let stats = null;
+      try { stats = await api('GET', '/stats'); } catch { /* 忽略 */ }
+      const rows = stats ? [
+        ['在线用户', String(stats.online)],
+        ['消息总数', String(stats.store.messages)],
+        ['会话数', String(stats.store.chats)],
+        ['待发 Telegram', String(stats.store.pendingTelegram)],
+        ['运行时长', `${Math.floor(stats.uptimeSeconds / 60)} 分钟`],
+        ['版本', state.meta ? state.meta.version : '-'],
+      ] : [];
+      statsBox.replaceChildren();
+      if (!rows.length) {
+        statsBox.append(el('div', { class: 'empty-hint', text: '统计暂不可用' }));
+        return;
+      }
+      for (const [k, v] of rows) {
+        statsBox.append(el('div', { class: 'result-item' },
+          el('div', { class: 't', text: k }), el('div', { class: 's', text: v })));
+      }
+    })();
   }
 
   function logout() {

@@ -21,6 +21,24 @@ def call(method, path, body=None, token=None, raw=False):
         except Exception:
             return e.code, {}
 
+def upload(path, blob, token, ctype="application/octet-stream", method="POST"):
+    """发原始字节（头像这种非 JSON 请求体）。"""
+    req = urllib.request.Request(B + path, data=blob, method=method)
+    req.add_header("Content-Type", ctype)
+    req.add_header("Authorization", "Bearer " + token)
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return r.status, dict(r.headers), r.read()
+    except urllib.error.HTTPError as e:
+        return e.code, dict(e.headers), e.read()
+
+def header(hdr, name):
+    """HTTP 头名大小写不敏感，而 dict() 会保留服务端原样的大小写。"""
+    for k, v in (hdr or {}).items():
+        if k.lower() == name.lower():
+            return v
+    return None
+
 def check(name, cond, extra=""):
     global passed, failed
     if cond:
@@ -143,6 +161,58 @@ check("标记已读", st == 200, str(st))
 st, r = call("GET", "/chats", token=T2)
 c = [x for x in r["data"]["chats"] if x["id"] == CID][0]
 check("已读后未读归零", (c.get("unread") or 0) == 0, json.dumps(c, ensure_ascii=False))
+
+print("== 头像与昵称 ==")
+PNG_1PX = bytes.fromhex(
+    "89504e470d0a1a0a0000000d4948445200000001000000010806000000"
+    "1f15c4890000000d4944415478da63f8ffff3f0005fe02fea7353d2b00"
+    "00000049454e44ae426082")
+
+st, hdr, blob = upload("/me/avatar", PNG_1PX, T1)
+check("上传头像", st == 200 and b'"avatarVersion"' in blob, str(st))
+st, hdr, blob = upload("/users/1/avatar", b"", "", method="GET")
+check("读取头像为图片", st == 200 and (header(hdr, "Content-Type") or "").startswith("image/"),
+      str(header(hdr, "Content-Type")))
+check("头像返回 ETag", bool(header(hdr, "ETag")), str(header(hdr, "ETag")))
+st, hdr, blob = upload("/me/avatar", b"<html><script>alert(1)</script>", T2, ctype="image/png")
+check("非图片内容被拒", st == 400, str(st))
+st, hdr, blob = upload("/me/avatar", b"", T1)
+check("空头像被拒", st == 400, str(st))
+
+st, r = call("PATCH", "/me", {"displayName":"爱丽丝"}, token=T1)
+check("改昵称", st == 200 and r["data"]["displayName"] == "爱丽丝", str(st))
+st, r = call("PATCH", "/me", {"displayName":""}, token=T1)
+check("空昵称被拒", st == 400, str(st))
+st, r = call("PATCH", "/me", {"displayName":"<img src=x>"}, token=T1)
+check("昵称里的尖括号被拒", st == 400, str(st))
+
+st, r = call("GET", "/me", token=T1)
+check("me 带 avatarVersion", (r["data"].get("avatarVersion") or 0) > 0, json.dumps(r["data"], ensure_ascii=False))
+
+st, r = call("GET", "/chats", token=T1)
+dm = [c for c in r["data"]["chats"] if c["kind"] == "direct"][0]
+check("私聊带对方信息", bool(dm.get("peer")) and dm["peer"]["username"] == "bob", json.dumps(dm, ensure_ascii=False)[:200])
+
+print("== 邀请 / 频道号加入 ==")
+st, r = call("POST", "/chats", {"title":"邀请频道"}, token=T1)
+check("建邀请测试频道", st == 201, str(st))
+IC, ISLUG = r["data"]["id"], r["data"]["slug"]
+st, _ = call("GET", f"/chats/{IC}/messages", token=T2)
+check("非成员读不到", st == 403, str(st))
+st, r = call("POST", f"/chats/{IC}/members", {"username":"bob"}, token=T1)
+check("邀请 bob 成功", st == 200, str(st))
+st, _ = call("GET", f"/chats/{IC}/messages", token=T2)
+check("被邀请后可读", st == 200, str(st))
+st, r = call("POST", f"/chats/{IC}/members", {"username":"bob"}, token=T1)
+check("重复邀请幂等", st == 200, str(st))
+st, r = call("POST", f"/chats/{IC}/members", {"username":"alice"}, token=T1)
+check("不能邀请自己", st == 400, str(st))
+st, r = call("POST", "/chats/join", {"slug":ISLUG}, token=T2)
+check("用频道号加入（已是成员）", st == 200, str(st))
+st, r = call("GET", f"/chats/{IC}/messages", token=T2)
+sys_lines = [m for m in r["data"]["messages"] if m["source"] == "system"]
+dup = [x for x in sys_lines if "Bob 加入了频道" in x["body"]]
+check("重复加入不重复写系统消息", len(dup) <= 1, str(len(dup)))
 
 print("== 成员/统计 ==")
 st, r = call("GET", f"/chats/{CID}/members", token=T1)
