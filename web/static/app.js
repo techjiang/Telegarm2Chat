@@ -975,6 +975,10 @@
     });
     const alertBox = el('div', { class: 'alert hidden' });
 
+    // 没配 Bot 时不要露出 TG 绑定入口：点保存只会报「未配置」，
+    // 用户会当成 bug。配置开关从 /meta 拿。
+    const tgEnabled = !!(state.meta && state.meta.telegramEnabled);
+
     // 邀请是频道专属动作：私聊只有两个人，没有「拉第三个进来」这回事。
     const inviteBtn = chat.kind === 'channel'
       ? el('button', {
@@ -1000,7 +1004,7 @@
         })
       : null;
 
-    const tgBtn = chat.kind === 'channel'
+    const tgBtn = chat.kind === 'channel' && tgEnabled
       ? el('button', {
           class: 'btn ghost', text: '保存',
           onclick: async (ev) => {
@@ -1047,7 +1051,9 @@
         alertBox,
         list,
         chat.kind === 'channel' ? el('div', { class: 'field' }, el('label', { text: '邀请他人加入' }), inviteInput) : null,
-        chat.kind === 'channel' ? el('div', { class: 'field' }, el('label', { text: '绑定 Telegram 群 ID（-100… 格式）' }), tgInput) : null,
+        chat.kind === 'channel' && tgEnabled
+          ? el('div', { class: 'field' }, el('label', { text: '绑定 Telegram 群 ID（-100… 格式）' }), tgInput)
+          : null,
       ),
       el('div', { class: 'row' },
         el('button', { class: 'btn ghost', text: '关闭', onclick: () => close() }),
